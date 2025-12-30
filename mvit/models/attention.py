@@ -8,7 +8,6 @@ import torch.nn as nn
 from mvit.models.common import DropPath, Mlp
 from torch.nn.init import trunc_normal_
 
-
 def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
     if pool is None:
         return tensor, hw_shape
@@ -16,17 +15,27 @@ def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
     if tensor_dim == 4:
         pass
     elif tensor_dim == 3:
-        tensor = tensor.unsqueeze(1)
+        tensor = tensor.unsqueeze(1) # make 4D (add dimension at position 1)
     else:
         raise NotImplementedError(f"Unsupported input dimension {tensor.shape}")
 
     if has_cls_embed:
+        # separate class token and patch tokens
+        #  cls_tok: Takes the first token (index 0) 
+        # tensor: Takes the remaining tokens (from index 1 onwards)
         cls_tok, tensor = tensor[:, :, :1, :], tensor[:, :, 1:, :]
 
+    # B = batch size, N = number of (attention) heads, L = length (sequence length), C = channels
     B, N, L, C = tensor.shape
+    # H = height, W = width
     H, W = hw_shape
+    # tensor.reshape(B * N, H, W, C): This converts from [batch, heads, sequence, channels] to
+    # [batch×heads, height, width, channels]
+    # permute(0, 3, 1, 2): This changes the order to [batch×heads, channels, height, width], 
+    # which is the expected input format for pooling layers in PyTorch.
     tensor = tensor.reshape(B * N, H, W, C).permute(0, 3, 1, 2).contiguous()
 
+    # Run pooling function provided in the argument
     tensor = pool(tensor)
 
     hw_shape = [tensor.shape[2], tensor.shape[3]]
