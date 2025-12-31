@@ -8,9 +8,11 @@ import torch.nn as nn
 from mvit.models.common import DropPath, Mlp
 from torch.nn.init import trunc_normal_
 
+# Pooling operation for attention tensors (Q, K, V)
 def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
+    # Check if pooling operation is provided
     if pool is None:
-        return tensor, hw_shape
+        return tensor, hw_shape # No pooling, return original tensor and shape
     tensor_dim = tensor.ndim
     if tensor_dim == 4:
         pass
@@ -19,16 +21,18 @@ def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
     else:
         raise NotImplementedError(f"Unsupported input dimension {tensor.shape}")
 
+    # If there is a classification token ("class token")
     if has_cls_embed:
         # separate class token and patch tokens
         #  cls_tok: Takes the first token (index 0) 
-        # tensor: Takes the remaining tokens (from index 1 onwards)
+        #  tensor: Takes the remaining tokens (from index 1 onwards)
         cls_tok, tensor = tensor[:, :, :1, :], tensor[:, :, 1:, :]
 
     # B = batch size, N = number of (attention) heads, L = length (sequence length), C = channels
     B, N, L, C = tensor.shape
     # H = height, W = width
     H, W = hw_shape
+
     # tensor.reshape(B * N, H, W, C): This converts from [batch, heads, sequence, channels] to
     # [batch×heads, height, width, channels]
     # permute(0, 3, 1, 2): This changes the order to [batch×heads, channels, height, width], 
@@ -38,16 +42,30 @@ def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
     # Run pooling function provided in the argument
     tensor = pool(tensor)
 
+    # Height, Width after pooling
     hw_shape = [tensor.shape[2], tensor.shape[3]]
+    # Length of sequence after pooling
     L_pooled = tensor.shape[2] * tensor.shape[3]
+
+    # This separates the merged B*N dimension back into batch B and heads N.
+    # Swaps dimensions 2 and 3 to get back to the standard format: 
+    # [batch, heads, sequence_length, channels]
     tensor = tensor.reshape(B, N, C, L_pooled).transpose(2, 3)
+    # The tensor is now back in the [batch, heads, sequence_length, channels] format, 
+    # but with a shorter sequence length due to spatial downsampling.
+   
+    # If there was a class token, concatenate it back to the front of the sequence
     if has_cls_embed:
         tensor = torch.cat((cls_tok, tensor), dim=2)
+    # Apply normalization if provided
     if norm is not None:
         tensor = norm(tensor)
 
+    # If the original tensor was 3D, squeeze back to 3D
     if tensor_dim == 3:
         tensor = tensor.squeeze(1)
+
+    # Return the pooled tensor and the new height-width shape
     return tensor, hw_shape
 
 
@@ -68,21 +86,28 @@ def cal_rel_pos_spatial(
     k_h, k_w = k_shape
 
     # Scale up rel pos if shapes for q and k are different.
-    q_h_ratio = max(k_h / q_h, 1.0)
-    k_h_ratio = max(q_h / k_h, 1.0)
+    q_h_ratio = max(k_h / q_h, 1.0) # scaling ratio for query height
+    k_h_ratio = max(q_h / k_h, 1.0) # scaling ratio for key height
+
+    # torch.arange(q_h)[:, None]: Creates a column vector of query height indices
+    # torch.arange(k_h)[None, :]: Creates a row vector of key height indices
     dist_h = (
         torch.arange(q_h)[:, None] * q_h_ratio - torch.arange(k_h)[None, :] * k_h_ratio
     )
     dist_h += (k_h - 1) * k_h_ratio
+    # dist_h: Height-wise distance matrix
+
+    # Repeat the same for width    
     q_w_ratio = max(k_w / q_w, 1.0)
     k_w_ratio = max(q_w / k_w, 1.0)
     dist_w = (
         torch.arange(q_w)[:, None] * q_w_ratio - torch.arange(k_w)[None, :] * k_w_ratio
     )
-    dist_w += (k_w - 1) * k_w_ratio
+    dist_w += (k_w - 1) * k_w_ratio 
+    # dist_w: Width-wise distance matrix
 
-    Rh = rel_pos_h[dist_h.long()]
-    Rw = rel_pos_w[dist_w.long()]
+    Rh = rel_pos_h[dist_h.long()] # Convert dist_h to integer type (int64) for indexing
+    Rw = rel_pos_w[dist_w.long()] # Convert dist_w to integer type (int64) for indexing
 
     B, n_head, q_N, dim = q.shape
 
