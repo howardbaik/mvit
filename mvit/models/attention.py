@@ -12,7 +12,7 @@ from torch.nn.init import trunc_normal_
 def attention_pool(tensor, pool, hw_shape, has_cls_embed=True, norm=None):
     # Check if pooling operation is provided
     if pool is None:
-        return tensor, hw_shape # No pooling, return original tensor and shape
+        return tensor, hw_shape # No pooling function provided, return original tensor and shape
     tensor_dim = tensor.ndim
     if tensor_dim == 4:
         pass
@@ -106,6 +106,7 @@ def cal_rel_pos_spatial(
     dist_w += (k_w - 1) * k_w_ratio 
     # dist_w: Width-wise distance matrix
 
+    # rel_pos_h / rel_pos_w : embedding tables where each row represents a relative position
     Rh = rel_pos_h[dist_h.long()] # Convert dist_h to integer type (int64) for indexing
     Rw = rel_pos_w[dist_w.long()] # Convert dist_w to integer type (int64) for indexing
 
@@ -121,6 +122,7 @@ def cal_rel_pos_spatial(
         + rel_w[:, :, :, :, None, :]
     ).view(B, -1, q_h * q_w, k_h * k_w)
 
+    # Returns attention matrix with spatial relative position biases added
     return attn
 
 
@@ -144,17 +146,19 @@ class MultiScaleAttention(nn.Module):
         rel_pos_zero_init=False,
         residual_pooling=True,
     ):
+        # Calls the parent class's (nn.Module) __init__ method
         super().__init__()
-        self.pool_first = pool_first
+        self.pool_first = pool_first # Whether to pool before projection
 
-        self.num_heads = num_heads
-        self.dim_out = dim_out
-        head_dim = dim_out // num_heads
-        self.scale = head_dim**-0.5
-        self.has_cls_embed = has_cls_embed
-        padding_q = [int(q // 2) for q in kernel_q]
+        self.num_heads = num_heads # Number of attention heads
+        self.dim_out = dim_out # Output dimension after attention
+        head_dim = dim_out // num_heads # Dimension per attention head
+        self.scale = head_dim**-0.5 # Scaling factor for attention scores
+        self.has_cls_embed = has_cls_embed # Whether there is a class token
+        padding_q = [int(q // 2) for q in kernel_q] 
         padding_kv = [int(kv // 2) for kv in kernel_kv]
 
+        # Define linear layers for query, key, value projections
         if pool_first:
             self.q = nn.Linear(dim, dim_out, bias=qkv_bias)
             self.k = nn.Linear(dim, dim_out, bias=qkv_bias)
@@ -162,6 +166,7 @@ class MultiScaleAttention(nn.Module):
         else:
             self.qkv = nn.Linear(dim, dim_out * 3, bias=qkv_bias)
 
+        # output projection layer in the attention mechanism
         self.proj = nn.Linear(dim_out, dim_out)
 
         # Skip pooling with kernel and stride size of (1, 1, 1).
@@ -171,6 +176,7 @@ class MultiScaleAttention(nn.Module):
             kernel_kv = ()
         self.mode = mode
 
+        # Define pooling operations based on the specified mode (avg, max, conv, conv_unshared)
         if mode in ("avg", "max"):
             pool_op = nn.MaxPool2d if mode == "max" else nn.AvgPool2d
             self.pool_q = (
@@ -258,8 +264,10 @@ class MultiScaleAttention(nn.Module):
         self.residual_pooling = residual_pooling
 
     def forward(self, x, hw_shape):
-        B, N, _ = x.shape
+        # B: batch size, N: sequence length, _: feature dimension
+        B, N, _ = x.shape 
 
+        # Pool first then linear project
         if self.pool_first:
             if self.mode == "conv_unshared":
                 fold_dim = 1
@@ -267,6 +275,7 @@ class MultiScaleAttention(nn.Module):
                 fold_dim = self.num_heads
             x = x.reshape(B, N, fold_dim, -1).permute(0, 2, 1, 3)
             q = k = v = x
+        # Linear project then pool
         else:
             assert self.mode != "conv_unshared"
 
@@ -415,6 +424,7 @@ class MultiScaleBlock(nn.Module):
         x_norm = self.norm1(x)
         x_block, hw_shape_new = self.attn(x_norm, hw_shape)
 
+        # self.dim_mul_in_att: Whether dimension multplicatin happens in attention the layer
         if self.dim_mul_in_att and self.dim != self.dim_out:
             x = self.proj(x_norm)
         x_res, _ = attention_pool(
